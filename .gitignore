@@ -2,3 +2,6 @@
 .data/
 /data
 runs/verification_ms1m_v2/last.pt
+runs/events_images/.DS_Store
+runs/events_images/*
+.DS_Store
