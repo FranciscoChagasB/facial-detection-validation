@@ -11,7 +11,7 @@ model = TinySSD(DetectorConfig(input_hw=(320,320))).to(device)
 ckpt = torch.load("./runs/detector_smoke/last.pt", map_location="cpu")
 model.load_state_dict(ckpt["model"], strict=True)
 
-img_path = "scripts\png-transparent-crowd-businessperson-generativity-others-company-people-social-group.png"
+img_path = "scripts/imagem.png"
 frame = cv2.imread(str(img_path))  # BGR
 if frame is None:
     raise FileNotFoundError(f"Imagem não encontrada: {img_path}")
@@ -20,9 +20,9 @@ dets, debug = detect_faces(
     model=model,
     frame=frame,
     device=device,
-    score_thr=0.25,
-    iou_thr=0.60,
-    assume_bgr=True,
+    score_thr=0.4,
+    iou_thr=0.65,
+    assume_bgr=False,
     return_debug=True
 )
 

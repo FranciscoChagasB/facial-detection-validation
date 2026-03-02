@@ -11,6 +11,8 @@ from typing import List, Optional, Sequence, Dict
 
 import multiprocessing as mp
 
+import torch
+
 from src.streaming.ingest import StreamSpec, start_ingest_processes
 from src.streaming.worker import start_worker_processes, WorkerConfig, MatchEvent
 
@@ -244,23 +246,25 @@ def example_run():
         )
     ]
 
+    print(torch.backends.mps.is_available())
+
     runtime_cfg = RuntimeConfig(
-        device="cuda",
+        device="mps",
         amp=True,
         detector=DetectorRuntimeConfig(
             checkpoint_path=r"runs/detector_smoke/last.pt",
-            input_hw=(320, 320),
-            score_thr=0.35,
-            iou_thr=0.60,
-            topk=300,
-            assume_bgr=True,
+            input_hw=(416, 416),
+            score_thr=0.4,
+            iou_thr=0.6,
+            topk=200,
+            assume_bgr=False,
         ),
         verification=VerificationRuntimeConfig(
             checkpoint_path=r"runs/verification_ms1m_v2/last.pt",
             input_hw=(112, 112),
-            base_c=64,
-            emb_dim=256,
-            threshold=0.60,
+            base_c=128,
+            emb_dim=512,
+            threshold=0.55,
             metric="cosine",
         ),
         crop=CropRuntimeConfig(
@@ -284,10 +288,10 @@ def example_run():
 
     orch_cfg = OrchestratorConfig(
         max_streams_per_process=30,
-        ingest_fps=3.0,
+        ingest_fps=1.0,
         ingest_out_w=640,
         ingest_out_h=360,
-        num_workers=1,
+        num_workers=4,
         save_events_jsonl=True,
         events_out_path="runs/events/events.jsonl",
         log_path="runs/events/orchestrator.log",
