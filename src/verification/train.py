@@ -217,21 +217,21 @@ def train(args: argparse.Namespace) -> None:
         margin=args.margin,
         distance=args.distance,
         reduction=args.reduction,
+        emb_dim=args.emb_dim,
+        num_classes=train_ds.num_classes,  # Essencial para o ArcFace saber quantas identidades existem
+        arcface_s=args.arcface_s,
+        arcface_m=args.arcface_m,
     )
     loss_fn = build_verification_loss(loss_cfg).to(device)
 
-    if args.loss_mode.lower() != "batch_semihard_triplet":
-        raise ValueError(
-            "Este train.py está focado em batch_semihard_triplet. "
-            "Para contrastive/triplet explícito, adapte o dataset/loader."
-        )
+    # Otimizador: ATENÇÃO! O ArcFace tem pesos próprios que precisam ser otimizados.
+    params_to_optimize = list(model.parameters()) + list(loss_fn.parameters())
 
-    # Optimizer
     if args.optim.lower() == "adamw":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+        optimizer = torch.optim.AdamW(params_to_optimize, lr=args.lr, weight_decay=args.wd)
     elif args.optim.lower() == "sgd":
         optimizer = torch.optim.SGD(
-            model.parameters(),
+            params_to_optimize,
             lr=args.lr,
             momentum=0.9,
             weight_decay=args.wd,
@@ -318,11 +318,8 @@ def train(args: argparse.Namespace) -> None:
             with torch.cuda.amp.autocast(enabled=use_amp):
                 emb = model(images)  # (B,D) L2-normalizado
 
-                if args.loss_mode.lower() == "batch_semihard_triplet":
-                    losses = loss_fn(emb, labels)
-                else:
-                    raise ValueError("Modo de loss incompatível com este train.py.")
-
+                # REMOVIDA A TRAVA. Agora passa direto para a loss configurada (ArcFace ou Triplet)
+                losses = loss_fn(emb, labels)
                 loss_total = losses["loss_total"]
 
             if use_amp:
@@ -444,27 +441,25 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--no_recursive_identity_scan", action="store_true")
     p.add_argument("--center_crop_square", action="store_true")
 
-    # loader (recomendado: PK)
-    p.add_argument("--use_plain_batch", action="store_true", help="Usa batch comum (não recomendado p/ semihard)")
-    p.add_argument("--batch_size", type=int, default=32, help="Usado apenas com --use_plain_batch")
-    p.add_argument("--val_batch_size", type=int, default=32, help="Usado apenas com --use_plain_batch")
-
+    # loader
+    p.add_argument("--use_plain_batch", action="store_true", help="Usa batch comum (Recomendado para ArcFace)")
+    p.add_argument("--batch_size", type=int, default=128, help="Usado apenas com --use_plain_batch")
+    p.add_argument("--val_batch_size", type=int, default=128, help="Usado apenas com --use_plain_batch")
     p.add_argument("--p_identities", type=int, default=8, help="P no PK sampler")
     p.add_argument("--k_images_per_identity", type=int, default=4, help="K no PK sampler")
     p.add_argument("--batches_per_epoch", type=int, default=0, help="0=auto")
-
     p.add_argument("--val_p_identities", type=int, default=8)
     p.add_argument("--val_k_images_per_identity", type=int, default=4)
     p.add_argument("--val_batches_per_epoch", type=int, default=0, help="0=auto")
-
     p.add_argument("--num_workers", type=int, default=4)
 
-    # loss (foco: batch semihard triplet)
-    p.add_argument("--loss_mode", type=str, default="batch_semihard_triplet",
-                   help="batch_semihard_triplet (recomendado)")
+    # loss
+    p.add_argument("--loss_mode", type=str, default="arcface", help="arcface | batch_semihard_triplet")
     p.add_argument("--margin", type=float, default=0.2)
-    p.add_argument("--distance", type=str, default="euclidean", help="euclidean | sqeuclidean | cosine")
+    p.add_argument("--distance", type=str, default="cosine", help="euclidean | sqeuclidean | cosine")
     p.add_argument("--reduction", type=str, default="mean", help="mean | sum")
+    p.add_argument("--arcface_s", type=float, default=64.0, help="Fator de escala do ArcFace")
+    p.add_argument("--arcface_m", type=float, default=0.50, help="Margem angular do ArcFace")
 
     # otimização
     p.add_argument("--epochs", type=int, default=30)

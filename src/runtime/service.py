@@ -101,7 +101,6 @@ class FaceRuntimeService:
 
         cfg = EmbedConfig(
             input_hw=self.ver_cfg.input_hw,
-            base_c=self.ver_cfg.base_c,
             emb_dim=self.ver_cfg.emb_dim,
             act=self.ver_cfg.act,
             use_se=self.ver_cfg.use_se,

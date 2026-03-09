@@ -1,4 +1,3 @@
-# src/streaming/orchestrator.py
 from __future__ import annotations
 
 import os
@@ -239,9 +238,17 @@ class StreamingOrchestrator:
 def example_run():
     streams = [
         StreamSpec(
-            stream_id="cam-172-25-127-209",
-            url="http://172.25.132.167:8888/cam-172-25-127-209/index.m3u8",
-        )
+            stream_id="camera-catraca-2",
+            url="rtsp://172.25.127.246:554/main_stream",
+            out_w=360,
+            out_h=640
+        ),
+        StreamSpec(
+            stream_id="camera-catraca-1",
+            url="rtsp://172.25.127.247:554/main_stream",
+            out_w=360,
+            out_h=640
+        ),
     ]
 
     runtime_cfg = RuntimeConfig(
@@ -249,23 +256,23 @@ def example_run():
         amp=True,
         detector=DetectorRuntimeConfig(
             checkpoint_path=r"runs/detector_smoke/last.pt",
-            input_hw=(320, 320),
-            score_thr=0.35,
+            input_hw=(416, 416),
+            score_thr=0.4,
             iou_thr=0.60,
-            topk=300,
+            topk=150,
             assume_bgr=True,
         ),
         verification=VerificationRuntimeConfig(
-            checkpoint_path=r"runs/verification_ms1m_v2/last.pt",
+            checkpoint_path=r"runs/verification_ms1m_arcface/last.pt",
             input_hw=(112, 112),
             base_c=64,
-            emb_dim=256,
-            threshold=0.60,
+            emb_dim=512,
+            threshold=0.3,
             metric="cosine",
         ),
         crop=CropRuntimeConfig(
-            expand_square_scale=1.35,
-            min_side_px=40,
+            expand_square_scale=1.25,
+            min_side_px=80,
             center_crop_square_reference=True,
         ),
         gallery_root_dir=r"data/galeria",
@@ -275,19 +282,19 @@ def example_run():
 
     worker_cfg = WorkerConfig(
         worker_id="gpu-worker",
-        per_camera_min_interval_s=0.4,
+        per_camera_min_interval_s=0.5,
         match_debounce_s=10.0,
-        only_matches=False,   # debug
+        only_matches=True,   # debug
         save_images=True,
         images_dir="runs/events_images",
     )
 
     orch_cfg = OrchestratorConfig(
         max_streams_per_process=30,
-        ingest_fps=3.0,
+        ingest_fps=1,
         ingest_out_w=640,
         ingest_out_h=360,
-        num_workers=1,
+        num_workers=2,
         save_events_jsonl=True,
         events_out_path="runs/events/events.jsonl",
         log_path="runs/events/orchestrator.log",

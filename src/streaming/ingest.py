@@ -1,4 +1,3 @@
-# src/streaming/ingest.py
 from __future__ import annotations
 
 import asyncio
@@ -15,14 +14,15 @@ import multiprocessing as mp
 class StreamSpec:
     stream_id: str
     url: str
-
+    out_w: int = 640
+    out_h: int = 360
 
 @dataclass
 class FramePacket:
     stream_id: str
     url: str
     ts: float
-    frame_bgr: Any  # numpy.ndarray (H,W,3) BGR uint8
+    frame_jpeg: bytes # bytes do JPEG em vez de Array BGR
 
 
 def _ffmpeg_cmd(
@@ -42,10 +42,19 @@ def _ffmpeg_cmd(
         "-hide_banner",
         "-loglevel", "error",
         "-nostdin",
-        "-rw_timeout", str(int(read_timeout_s * 1_000_000)),
+        #"-hwaccel", "cuda",  # ATIVAR A ACELERAÇÃO DA NVIDIA PARA DECODIFICAÇÃO
     ]
 
-    if headers:
+    # Diferenciação entre RTSP e HTTP(S)/HLS
+    is_rtsp = url.lower().startswith("rtsp://")
+
+    if is_rtsp:
+        cmd += ["-rtsp_transport", "tcp"]
+        cmd += ["-timeout", str(int(read_timeout_s * 1_000_000))]
+    else:
+        cmd += ["-rw_timeout", str(int(read_timeout_s * 1_000_000))]
+
+    if headers and not is_rtsp:
         cmd += ["-headers", headers]
 
     cmd += [
@@ -109,15 +118,15 @@ class AsyncIngestWorker:
             pass
 
     async def _run_one(self, spec: StreamSpec):
-        frame_size = self.out_w * self.out_h * 3
+        frame_size = spec.out_w * spec.out_h * 3
 
         while not self._stop:
             proc = None
             try:
                 cmd = _ffmpeg_cmd(
                     url=spec.url,
-                    out_w=self.out_w,
-                    out_h=self.out_h,
+                    out_w=spec.out_w,
+                    out_h=spec.out_h,
                     fps=self.fps,
                     read_timeout_s=self.read_timeout_s,
                     extra_headers=self.extra_headers,
@@ -130,21 +139,36 @@ class AsyncIngestWorker:
                 )
 
                 assert proc.stdout is not None
-                reader: asyncio.StreamReader = proc.stdout  # type: ignore
+                assert proc.stderr is not None
+                reader: asyncio.StreamReader = proc.stdout
 
                 while not self._stop:
                     raw = await _read_exactly(reader, frame_size)
                     if raw is None:
+                        error_msg = await proc.stderr.read()
+                        if error_msg:
+                            print(f"\n[ERRO FFMPEG] Câmera {spec.stream_id}:")
+                            print(error_msg.decode('utf-8', errors='ignore'))
                         break
 
                     import numpy as np
-                    frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.out_h, self.out_w, 3))
+                    import cv2
+                    
+                    # 1. Monta o array a partir do buffer (rápido, não copia memória)
+                    frame = np.frombuffer(raw, dtype=np.uint8).reshape((spec.out_h, spec.out_w, 3))
+                    
+                    # 2. Comprime para JPEG (Qualidade 90 é um ótimo balanço de peso vs preservação facial)
+                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 90]
+                    success, encoded_image = cv2.imencode('.jpg', frame, encode_param)
+                    
+                    if not success:
+                        continue
 
                     pkt = FramePacket(
                         stream_id=spec.stream_id,
                         url=spec.url,
                         ts=time.time(),
-                        frame_bgr=frame,
+                        frame_jpeg=encoded_image.tobytes(), # <-- Envia apenas os bytes leves
                     )
 
                     if self.drop_if_full:

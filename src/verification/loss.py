@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -300,6 +301,69 @@ class BatchSemiHardTripletLoss(nn.Module):
             "num_anchors_used": torch.tensor(float(anchors_used), device=device, dtype=embeddings.dtype),
         }
 
+@dataclass(frozen=True)
+class ArcFaceConfig:
+    in_features: int
+    out_classes: int
+    s: float = 64.0
+    m: float = 0.50
+
+class ArcFaceLoss(nn.Module):
+    """
+    Additive Angular Margin Loss (ArcFace).
+    Trata o problema como classificação de N classes, otimizando a margem angular.
+    """
+    def __init__(self, cfg: ArcFaceConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.s = cfg.s
+        self.m = cfg.m
+        
+        # Matriz de pesos que representa os "centros" de cada identidade (N classes x Dimensão do Embedding)
+        self.weight = nn.Parameter(torch.FloatTensor(cfg.out_classes, cfg.in_features))
+        nn.init.xavier_uniform_(self.weight)
+
+        self.cos_m = math.cos(self.m)
+        self.sin_m = math.sin(self.m)
+        self.th = math.cos(math.pi - self.m)
+        self.mm = math.sin(math.pi - self.m) * self.m
+
+    def forward(self, embeddings: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # 1. Força float32 para evitar underflow/overflow do AMP
+        embeddings = embeddings.float()
+        norm_weight = F.normalize(self.weight.float(), p=2, dim=1)
+        
+        # Similaridade por cosseno
+        cosine = F.linear(embeddings, norm_weight)
+        
+        # 2. A CORREÇÃO DO NaN: clamp com 1e-7 em vez de 0 evita a divisão por zero no backward
+        sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(1e-7, 1.0))
+
+        # Adiciona a margem angular
+        phi = cosine * self.cos_m - sine * self.sin_m
+        phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+
+        # One-hot encoding dos labels garantindo o tipo e o device corretos
+        one_hot = torch.zeros(cosine.size(), device=embeddings.device, dtype=embeddings.dtype)
+        one_hot.scatter_(1, labels.view(-1, 1).long(), 1.0)
+
+        # Aplica a margem apenas na classe correta
+        output = (one_hot * phi) + ((1.0 - one_hot) * cosine)
+        output *= self.s
+
+        # Cross Entropy Loss
+        loss = F.cross_entropy(output, labels)
+
+        # Retorna chaves dummy
+        z = torch.tensor(0.0, device=embeddings.device, dtype=embeddings.dtype)
+        return {
+            "loss_total": loss,
+            "mean_d_ap": z,
+            "mean_d_an": z,
+            "triplets_active_ratio": z,
+            "num_triplets": torch.tensor(float(embeddings.size(0)), device=embeddings.device, dtype=embeddings.dtype),
+        }
+
 # Fábrica / wrapper opcional
 
 @dataclass(frozen=True)
@@ -308,39 +372,38 @@ class VerificationLossFactoryConfig:
     margin: float = 0.2
     distance: str = "euclidean"
     reduction: str = "mean"
+    
+    # Configs exclusivas para ArcFace
+    emb_dim: int = 512
+    num_classes: int = 0
+    arcface_s: float = 64.0
+    arcface_m: float = 0.50
 
 def build_verification_loss(cfg: VerificationLossFactoryConfig) -> nn.Module:
-    """
-    Cria loss para o treino de verificação.
-    Modos:
-      - "batch_semihard_triplet"
-      - "triplet"
-      - "contrastive"
-    """
     mode = cfg.mode.lower()
 
-    if mode == "batch_semihard_triplet":
-        return BatchSemiHardTripletLoss(
-            BatchSemiHardTripletConfig(
-                margin=cfg.margin,
-                distance=cfg.distance,
-                reduction=cfg.reduction,
+    if mode == "arcface":
+        if cfg.num_classes <= 0:
+            raise ValueError("Para usar arcface, num_classes deve ser > 0 (fornecido pelo dataset).")
+        return ArcFaceLoss(
+            ArcFaceConfig(
+                in_features=cfg.emb_dim,
+                out_classes=cfg.num_classes,
+                s=cfg.arcface_s,
+                m=cfg.arcface_m,
             )
+        )
+    elif mode == "batch_semihard_triplet":
+        return BatchSemiHardTripletLoss(
+            BatchSemiHardTripletConfig(margin=cfg.margin, distance=cfg.distance, reduction=cfg.reduction)
         )
     elif mode == "triplet":
         return TripletLoss(
-            TripletLossConfig(
-                margin=cfg.margin,
-                distance=cfg.distance,
-                reduction=cfg.reduction,
-            )
+            TripletLossConfig(margin=cfg.margin, distance=cfg.distance, reduction=cfg.reduction)
         )
     elif mode == "contrastive":
         return ContrastiveLoss(
-            ContrastiveLossConfig(
-                margin=cfg.margin,
-                distance=cfg.distance,
-            )
+            ContrastiveLossConfig(margin=cfg.margin, distance=cfg.distance)
         )
     else:
         raise ValueError(f"mode inválido: {cfg.mode}")

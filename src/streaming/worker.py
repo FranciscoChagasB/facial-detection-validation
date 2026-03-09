@@ -1,4 +1,3 @@
-# src/streaming/worker.py
 from __future__ import annotations
 
 import os
@@ -63,7 +62,7 @@ class MatchEvent:
     metric: str
     threshold: float
     frame_path: str = ""
-    crop_path: str = ""
+    comparison_path: str = ""  # <-- Alterado para guardar a imagem lado a lado
 
 
 class StreamingWorker:
@@ -136,7 +135,7 @@ class StreamingWorker:
         assert m.identity is not None
 
         frame_path = ""
-        crop_path = ""
+        comparison_path = ""
 
         if self.worker_cfg.save_images:
             cam_hash = _hash_short(pkt.stream_id)
@@ -154,10 +153,44 @@ class StreamingWorker:
                 y1 = max(0, min(h - 1, y1))
                 x2 = max(0, min(w - 1, x2))
                 y2 = max(0, min(h - 1, y2))
+                
                 if x2 > x1 and y2 > y1:
                     crop = frame_bgr[y1:y2, x1:x2]
-                    crop_path = os.path.join(base, f"{ts_int}_crop_{m.identity}.jpg")
-                    cv2.imwrite(crop_path, crop, [int(cv2.IMWRITE_JPEG_QUALITY), int(self.worker_cfg.jpg_quality)])
+                    
+                    # 1. Padroniza tamanho para a exibição lado a lado
+                    comp_size = 112
+                    crop_resized = cv2.resize(crop, (comp_size, comp_size))
+                    
+                    # 2. Busca a foto de referência correspondente na galeria
+                    ref_img = None
+                    if m.identity and m.identity != "UNKNOWN" and self.runtime_cfg.gallery_root_dir:
+                        id_dir = os.path.join(self.runtime_cfg.gallery_root_dir, m.identity)
+                        if os.path.isdir(id_dir):
+                            for fn in os.listdir(id_dir):
+                                if fn.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                                    ref_path = os.path.join(id_dir, fn)
+                                    ref_img = cv2.imread(ref_path)
+                                    if ref_img is not None:
+                                        break
+                    
+                    # 3. Prepara a imagem da galeria ou cria fallback escuro se não achar
+                    if ref_img is not None:
+                        ref_resized = cv2.resize(ref_img, (comp_size, comp_size))
+                    else:
+                        ref_resized = np.zeros_like(crop_resized)
+                        cv2.putText(ref_resized, "SEM REF", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                    
+                    # 4. Concatena lado a lado
+                    combo = cv2.hconcat([crop_resized, ref_resized])
+                    
+                    # 5. Adiciona um painel superior para os nomes
+                    combo_with_text = np.zeros((comp_size + 30, comp_size * 2, 3), dtype=np.uint8)
+                    combo_with_text[30:, :] = combo
+                    cv2.putText(combo_with_text, "Camera", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    cv2.putText(combo_with_text, f"Galeria ({m.identity[:8]})", (comp_size + 5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                    comparison_path = os.path.join(base, f"{ts_int}_comp_{m.identity}.jpg")
+                    cv2.imwrite(comparison_path, combo_with_text, [int(cv2.IMWRITE_JPEG_QUALITY), int(self.worker_cfg.jpg_quality)])
 
         event = MatchEvent(
             camera_id=pkt.stream_id,
@@ -170,7 +203,7 @@ class StreamingWorker:
             metric=m.metric,
             threshold=float(m.threshold),
             frame_path=frame_path,
-            crop_path=crop_path,
+            comparison_path=comparison_path,
         )
 
         try:
@@ -183,11 +216,16 @@ class StreamingWorker:
         if not self._should_process_camera(pkt.stream_id, pkt.ts):
             return
 
-        # conta "processado" quando realmente vamos rodar inferência
         self._inc_frames_proc()
 
+        nparr = np.frombuffer(pkt.frame_jpeg, np.uint8)
+        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if frame_bgr is None:
+            return
+
         res: FrameResult = self.svc.process_frame(
-            frame_bgr=pkt.frame_bgr,
+            frame_bgr=frame_bgr,
             camera_id=pkt.stream_id,
             timestamp=pkt.ts,
             return_only_matches=self.worker_cfg.only_matches,
@@ -197,23 +235,21 @@ class StreamingWorker:
             return
 
         for det in res.detections:
-            # se não tem match e only_matches=False, emite UNKNOWN (debug)
             if det.match is None or det.match.identity is None:
                 if self.worker_cfg.only_matches:
                     continue
                 pseudo = FaceMatch(identity="UNKNOWN", score=0.0, is_match=False, metric="cosine", threshold=0.0)
                 det = FaceDetectionResult(box_xyxy_px=det.box_xyxy_px, det_score=det.det_score, match=pseudo)
-                self._emit_event(pkt, det, pkt.frame_bgr)
+                self._emit_event(pkt, det, frame_bgr)
                 continue
 
-            # se tem match real:
             if self.worker_cfg.only_matches and not det.match.is_match:
                 continue
 
             if not self._debounce_match(pkt.stream_id, det.match.identity, pkt.ts):
                 continue
 
-            self._emit_event(pkt, det, pkt.frame_bgr)
+            self._emit_event(pkt, det, frame_bgr)
 
     def run_forever(self) -> None:
         while True:

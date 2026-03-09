@@ -27,7 +27,7 @@ class VerificationRuntimeConfig:
     # config do modelo de embedding (deve bater com o treino)
     input_hw: Tuple[int, int] = (112, 112)
     base_c: int = 64
-    emb_dim: int = 256
+    emb_dim: int = 512
     act: str = "relu"
     use_se: bool = True
     dropout: float = 0.0
@@ -40,7 +40,7 @@ class VerificationRuntimeConfig:
 class CropRuntimeConfig:
     # expande e faz box quadrada antes do crop
     expand_square_scale: float = 1.25
-    min_side_px: int = 20
+    min_side_px: int = 60
 
     # se quiser forçar crop quadrado central na referência (quando a ref não for crop)
     center_crop_square_reference: bool = True
